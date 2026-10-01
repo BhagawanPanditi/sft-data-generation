@@ -71,11 +71,13 @@ Useful environment settings:
 ```bash
 # These direct cluster addresses are also the built-in defaults; no SSH port forwarding is needed.
 export VLLM_SERVERS=http://cn23-a40:8000/v1,http://cn24-a40:8001/v1,http://cn24-a40:8002/v1
-export JUDGE_VLLM_SERVERS=http://localhost:8010/v1
-export SERVED_MODEL_ID=generator-model-id
-export JUDGE_MODEL_ID=independent-reviewer-model-id
-# Strongest mode: fail if generation/extraction and review resolve to the same model id.
-export REQUIRE_DISTINCT_JUDGE_MODEL=1
+# SERVED_MODEL_ID is optional; omit it to use the model reported by /v1/models.
+# export SERVED_MODEL_ID=generator-model-id
+# By default reviewers use the same three endpoints. If another cluster host serves a
+# genuinely independent reviewer, configure it and enable the strict independence gate:
+# export JUDGE_VLLM_SERVERS=http://reviewer-host:8000/v1
+# export JUDGE_MODEL_ID=independent-reviewer-model-id
+# export REQUIRE_DISTINCT_JUDGE_MODEL=1
 # Retry unresolved stage-1 records after inspecting the verifier report.
 # export RETRY_REJECTED=1
 # If a non-Qwen chat template rejects enable_thinking:
