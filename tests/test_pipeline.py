@@ -13,7 +13,7 @@ import pytest
 import stage1_extract
 from dataset_codecs import decode_lbpp_value
 from download_datasets import LIVECODEBENCH_FILES, MBPP_REPO, materialize_download
-from llm_pool import Endpoint, LLMPool, file_hash
+from llm_pool import Endpoint, LLMPool, file_hash, iter_jsonl
 from stage1_extract import EXPECTED_BASIS, Stats, dedup_key, fmt_crux, make_sections, missing_required_kinds
 from stage2_taxonomy import per_node_rng, weighted_sample_without_replacement
 from stage3_question_bank import allocate_quotas, resumed_identifier_set, validate_signature
@@ -53,12 +53,28 @@ def test_livecodebench_release_mapping_and_materialization(tmp_path):
         "test5.jsonl": "livecodebench_v5.jsonl",
         "test6.jsonl": "livecodebench_v6.jsonl",
     }
-    source = tmp_path / "test6.jsonl"
-    target = tmp_path / "livecodebench_v6.jsonl"
-    source.write_text('{"question_content":"example"}\n', encoding="utf-8")
+    blob = tmp_path / "cache" / "blobs" / "abc"
+    blob.parent.mkdir(parents=True)
+    blob.write_text('{"question_content":"example"}\n', encoding="utf-8")
+    source = tmp_path / "cache" / "snapshots" / "revision" / "test6.jsonl"
+    source.parent.mkdir(parents=True)
+    source.symlink_to("../../blobs/abc")
+    target = tmp_path / "data" / "livecodebench_v6.jsonl"
+    target.parent.mkdir()
     materialize_download(source, target)
-    assert target.read_bytes() == source.read_bytes()
-    assert not (tmp_path / "livecodebench_v6.jsonl.part").exists()
+    assert target.read_bytes() == blob.read_bytes()
+    assert not target.is_symlink()
+    assert not (target.parent / "livecodebench_v6.jsonl.part").exists()
+
+
+def test_strict_jsonl_reader_rejects_missing_or_broken_files(tmp_path):
+    missing = tmp_path / "missing.jsonl"
+    with pytest.raises(FileNotFoundError, match="broken symlink"):
+        list(iter_jsonl(missing, strict=True))
+    broken = tmp_path / "broken.jsonl"
+    broken.symlink_to("does-not-exist")
+    with pytest.raises(FileNotFoundError, match="broken symlink"):
+        list(iter_jsonl(broken, strict=True))
 
 
 def test_structured_probe_rejects_schema_violations():

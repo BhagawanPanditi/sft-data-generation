@@ -41,4 +41,4 @@ REQUIRE_DISTINCT_JUDGE_MODEL = os.getenv("REQUIRE_DISTINCT_JUDGE_MODEL", "0") ==
 _EXTRA = os.getenv("EXTRA_REQUEST_BODY", '{"chat_template_kwargs":{"enable_thinking":false}}')
 EXTRA_REQUEST_BODY: dict[str, Any] = json.loads(_EXTRA) if _EXTRA.strip() else {}
 
-PIPELINE_VERSION = "2026-10-01.5"
+PIPELINE_VERSION = "2026-10-01.6"

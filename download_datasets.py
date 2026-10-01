@@ -117,6 +117,9 @@ def save_lbpp() -> dict:
 
 def materialize_download(source: Path, target: Path) -> None:
     """Atomically expose a Hub-cached file under its pipeline name without needless copies."""
+    # hf_hub_download commonly returns a relative symlink inside snapshots/. Hard-linking
+    # that symlink and moving it elsewhere produces a broken link, so always link its blob.
+    source = source.resolve(strict=True)
     temporary = target.with_suffix(target.suffix + ".part")
     temporary.unlink(missing_ok=True)
     try:
@@ -127,6 +130,8 @@ def materialize_download(source: Path, target: Path) -> None:
         with source.open("rb") as reader, temporary.open("wb") as writer:
             shutil.copyfileobj(reader, writer, length=8 * 1024 * 1024)
     os.replace(temporary, target)
+    if not target.is_file():
+        raise RuntimeError(f"Failed to materialize downloaded file: {target}")
 
 
 def download_livecodebench() -> dict:
