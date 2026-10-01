@@ -12,7 +12,7 @@ import pytest
 
 import stage1_extract
 from dataset_codecs import decode_lbpp_value
-from download_datasets import LIVECODEBENCH_FILES, MBPP_REPO, materialize_download
+from download_datasets import LIVECODEBENCH_FILES, MBPP_REPO, compact_livecodebench_file
 from llm_pool import Endpoint, LLMPool, file_hash, iter_jsonl
 from stage1_extract import EXPECTED_BASIS, Stats, dedup_key, fmt_crux, fmt_lbpp, make_sections, missing_required_kinds
 from stage2_taxonomy import per_node_rng, weighted_sample_without_replacement
@@ -43,7 +43,7 @@ def test_file_hash_streams_to_the_expected_digest(tmp_path):
     assert file_hash(artifact, chunk_size=4093) == hashlib.sha256(payload).hexdigest()
 
 
-def test_livecodebench_release_mapping_and_materialization(tmp_path):
+def test_livecodebench_release_mapping_and_compaction(tmp_path):
     assert MBPP_REPO == "google-research-datasets/mbpp"
     assert LIVECODEBENCH_FILES == {
         "test.jsonl": "livecodebench_v1.jsonl",
@@ -55,16 +55,26 @@ def test_livecodebench_release_mapping_and_materialization(tmp_path):
     }
     blob = tmp_path / "cache" / "blobs" / "abc"
     blob.parent.mkdir(parents=True)
-    blob.write_text('{"question_content":"example"}\n', encoding="utf-8")
+    blob.write_text(json.dumps({
+        "question_id": "x", "question_content": "example", "public_test_cases": "[]",
+        "private_test_cases": "opaque-and-large", "unused": "discard me",
+    }) + "\n", encoding="utf-8")
     source = tmp_path / "cache" / "snapshots" / "revision" / "test6.jsonl"
     source.parent.mkdir(parents=True)
     source.symlink_to("../../blobs/abc")
     target = tmp_path / "data" / "livecodebench_v6.jsonl"
     target.parent.mkdir()
-    materialize_download(source, target)
-    assert target.read_bytes() == blob.read_bytes()
+    detail = compact_livecodebench_file(source, target, remote_name="test6.jsonl")
+    rows = list(iter_jsonl(target, strict=True))
+    assert rows == [{"question_content": "example", "question_id": "x", "public_test_cases": "[]"}]
+    assert detail["private_test_payloads_removed"] == 1
+    assert detail["compact_bytes"] < detail["source_bytes"]
     assert not target.is_symlink()
-    assert not (target.parent / "livecodebench_v6.jsonl.part").exists()
+    assert not (target.parent / "livecodebench_v6.jsonl.compact.part").exists()
+    # The repair command compacts files in place and must be idempotent.
+    repaired = compact_livecodebench_file(target, target, remote_name="test6.jsonl")
+    assert repaired["rows"] == 1
+    assert list(iter_jsonl(target, strict=True)) == rows
 
 
 def test_absent_resume_jsonl_is_an_empty_log(tmp_path):

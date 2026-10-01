@@ -35,7 +35,15 @@ test2.jsonl -> data/coding/livecodebench_v2.jsonl
 test6.jsonl -> data/coding/livecodebench_v6.jsonl
 ```
 
-These files total roughly 4.5 GB. The downloader uses the Hugging Face cache and normally hard-links the cached file blobs rather than making another full copy. Interrupted runs are safe to rerun: completed Hub payloads are reused from the cache instead of downloaded again, while local exports are revalidated. It validates every JSONL record and records the pinned revision, row count, local path, and SHA-256 hash in the download manifest. Stage 1 does not assume that releases are disjoint: it deduplicates repeated LiveCodeBench statements and writes the decisions to `output/autopsies/dedup_report.jsonl`.
+The raw files total roughly 4.5 GB and remain in the Hugging Face cache. Local `data/coding/livecodebench_v*.jsonl` exports retain the statement, identity/provenance fields, starter code, and public-test JSON, but omit the opaque compressed `private_test_cases` payload that Stage 1 cannot use. Interrupted runs reuse completed Hub downloads. Every retained record is validated, and the manifest records raw/compact sizes, row counts, revision, paths, and hashes. Stage 1 does not assume releases are disjoint: it deduplicates repeated statements in `output/autopsies/dedup_report.jsonl`.
+
+To compact six shards downloaded by an older pipeline without contacting the Hub or processing other datasets, run this **before starting a fresh Stage 1 run**:
+
+```bash
+python download_datasets.py --repair-livecodebench
+```
+
+The command rewrites each shard atomically in place. Do not run it in the middle of a resumable Stage 1 run: changing source-file hashes intentionally invalidates that run's manifest, even though the omitted private payload was never sent to the model.
 
 MBPP is downloaded from the native-Parquet `google-research-datasets/mbpp` repository. Do not substitute the legacy `Muennighoff/mbpp` script repository when using `datasets>=4`; version 4 deliberately no longer executes Hub dataset scripts.
 

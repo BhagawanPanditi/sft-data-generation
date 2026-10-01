@@ -7,8 +7,9 @@ restricted unpickler; undecodable records are rejected rather than converted int
 """
 from __future__ import annotations
 
+import argparse
+import json
 import os
-import shutil
 from pathlib import Path
 
 from datasets import load_dataset
@@ -36,6 +37,12 @@ LIVECODEBENCH_FILES = {
     "test5.jsonl": "livecodebench_v5.jsonl",
     "test6.jsonl": "livecodebench_v6.jsonl",
 }
+# Stage 1 uses exactly these fields. ``private_test_cases`` is an opaque compressed
+# payload and is intentionally kept only in the immutable Hub cache, not local exports.
+LIVECODEBENCH_KEEP_FIELDS = (
+    "question_title", "question_content", "platform", "question_id", "contest_id",
+    "contest_date", "starter_code", "difficulty", "public_test_cases", "metadata",
+)
 
 
 def resolve_revision(repo_id: str) -> str:
@@ -115,27 +122,45 @@ def save_lbpp() -> dict:
     }
 
 
-def materialize_download(source: Path, target: Path) -> None:
-    """Atomically expose a Hub-cached file under its pipeline name without needless copies."""
-    # hf_hub_download commonly returns a relative symlink inside snapshots/. Hard-linking
-    # that symlink and moving it elsewhere produces a broken link, so always link its blob.
+def compact_livecodebench_file(source: Path, target: Path, *, remote_name: str) -> dict:
+    """Stream a raw LCB shard to the exact fields consumed by Stage 1."""
     source = source.resolve(strict=True)
-    temporary = target.with_suffix(target.suffix + ".part")
+    source_bytes = source.stat().st_size
+    temporary = target.with_suffix(target.suffix + ".compact.part")
     temporary.unlink(missing_ok=True)
+    count = 0
+    dropped_private = 0
     try:
-        # The Hub cache is normally on the same filesystem, so a hard link avoids
-        # temporarily doubling the roughly 4.5 GB LiveCodeBench footprint.
-        os.link(source, temporary)
-    except OSError:
-        with source.open("rb") as reader, temporary.open("wb") as writer:
-            shutil.copyfileobj(reader, writer, length=8 * 1024 * 1024)
-    os.replace(temporary, target)
-    if not target.is_file():
-        raise RuntimeError(f"Failed to materialize downloaded file: {target}")
+        with temporary.open("w", encoding="utf-8") as writer:
+            for line_number, row in enumerate(iter_jsonl(source, strict=True), 1):
+                missing = {"question_content", "question_id"} - set(row)
+                if missing:
+                    raise RuntimeError(
+                        f"Unexpected LiveCodeBench schema in {remote_name} line {line_number}: "
+                        f"missing {sorted(missing)}; got {sorted(row)}"
+                    )
+                dropped_private += int(bool(row.get("private_test_cases")))
+                compact = {key: row[key] for key in LIVECODEBENCH_KEEP_FIELDS if key in row}
+                writer.write(json.dumps(compact, ensure_ascii=False, separators=(",", ":")) + "\n")
+                count += 1
+        if count == 0:
+            raise RuntimeError(f"LiveCodeBench file is empty: {remote_name}")
+        os.replace(temporary, target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    compact_bytes = target.stat().st_size
+    display_path = str(target.relative_to(ROOT)) if target.is_relative_to(ROOT) else str(target)
+    return {
+        "remote_file": remote_name, "path": display_path, "rows": count,
+        "sha256": file_hash(target), "source_bytes": source_bytes, "compact_bytes": compact_bytes,
+        "bytes_removed": max(0, source_bytes - compact_bytes),
+        "private_test_payloads_removed": dropped_private,
+    }
 
 
 def download_livecodebench() -> dict:
-    """Download and rename all six release files from the pinned Hub revision."""
+    """Download all six releases and write compact Stage-1 source shards."""
     repo_id = "livecodebench/code_generation_lite"
     revision = resolve_revision(repo_id)
     details = []
@@ -144,26 +169,41 @@ def download_livecodebench() -> dict:
         cached = Path(hf_hub_download(
             repo_id=repo_id, filename=remote_name, repo_type="dataset", revision=revision,
         ))
-        path = DATA_DIR / local_name
-        materialize_download(cached, path)
+        detail = compact_livecodebench_file(cached, DATA_DIR / local_name, remote_name=remote_name)
+        print(f"  [Compact] rows={detail['rows']} removed={detail['bytes_removed'] / 1e9:.2f} GB")
+        details.append(detail)
+    return {"repo_id": repo_id, "revision": revision,
+            "mode": "hub_release_files_compact", "files": details}
 
-        count = 0
-        required = {"question_content"}
-        for line_number, row in enumerate(iter_jsonl(path, strict=True), 1):
-            missing = required - set(row)
-            if missing:
-                raise RuntimeError(
-                    f"Unexpected LiveCodeBench schema in {remote_name} line {line_number}: "
-                    f"missing {sorted(missing)}; got {sorted(row)}"
-                )
-            count += 1
-        if count == 0:
-            raise RuntimeError(f"LiveCodeBench file is empty: {remote_name}")
-        details.append({
-            "remote_file": remote_name, "path": str(path.relative_to(ROOT)),
-            "rows": count, "sha256": file_hash(path),
-        })
-    return {"repo_id": repo_id, "revision": revision, "mode": "hub_release_files", "files": details}
+
+def repair_existing_livecodebench() -> int:
+    """Compact already-downloaded local shards without touching the Hub or other datasets."""
+    manifest_path = MANIFEST_DIR / "download_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {
+        "pipeline_version": PIPELINE_VERSION, "datasets": [],
+    }
+    old_entry = next((entry for entry in manifest.get("datasets", [])
+                      if entry.get("repo_id") == "livecodebench/code_generation_lite"), {})
+    details = []
+    for remote_name, local_name in LIVECODEBENCH_FILES.items():
+        path = DATA_DIR / local_name
+        if not path.exists():
+            raise FileNotFoundError(f"Missing {path}; run the full downloader first")
+        detail = compact_livecodebench_file(path, path, remote_name=remote_name)
+        print(f"[Repair] {local_name}: rows={detail['rows']} removed={detail['bytes_removed'] / 1e9:.2f} GB")
+        details.append(detail)
+    replacement = {
+        "repo_id": "livecodebench/code_generation_lite",
+        "revision": old_entry.get("revision"),
+        "mode": "hub_release_files_compact",
+        "files": details,
+    }
+    manifest["pipeline_version"] = PIPELINE_VERSION
+    manifest["datasets"] = [entry for entry in manifest.get("datasets", [])
+                            if entry.get("repo_id") != replacement["repo_id"]] + [replacement]
+    atomic_write_json(manifest_path, manifest)
+    print(f"[Done] Repaired local LiveCodeBench shards and updated {manifest_path}")
+    return 0
 
 
 def main() -> int:
@@ -194,4 +234,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repair-livecodebench", action="store_true",
+        help="compact existing local LiveCodeBench shards only; do not download anything",
+    )
+    arguments = parser.parse_args()
+    raise SystemExit(repair_existing_livecodebench() if arguments.repair_livecodebench else main())
