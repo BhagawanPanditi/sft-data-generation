@@ -114,7 +114,7 @@ Do **not** serialize the private metadata into training prompts. It includes tar
 
 ## Why this version is stricter
 
-- LBPP decodes `completion`, `test_setup`, `test_list`, and `test_file` through a restricted unpickler and final JSON layer. Failed records are rejected.
+- LBPP decodes `completion`, `test_setup`, `test_list`, and `test_file` through a restricted unpickler and final JSON layer. Failed records are rejected, and non-Python rows are excluded because the final bank requires Python declarations.
 - Statement, solution, test, and trace sections are typed. Evidence must occur in the exact claimed section.
 - HumanEval statement and reference solution are separate sections. CRUXEval program/input/output are trace evidence—not tests or a reference solution.
 - HumanEval/HumanEval+ and MBPP/MBPP+ use richer-source precedence; exact cumulative-shard duplicates are removed by normalized statement hash.

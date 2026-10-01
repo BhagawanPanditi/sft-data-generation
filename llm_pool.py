@@ -68,9 +68,9 @@ def extract_json(text: str | None):
 
 
 def iter_jsonl(path: Path, *, strict: bool = False) -> Iterator[dict]:
+    # Missing files are valid for append-only resume logs before their first row is
+    # written. Callers that require an input artifact check it explicitly beforehand.
     if not path.exists():
-        if strict:
-            raise FileNotFoundError(f"JSONL file does not exist or is a broken symlink: {path}")
         return
     with path.open(encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):

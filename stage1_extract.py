@@ -118,7 +118,7 @@ RULES
    - `failing_input_class`: a generic class of valid inputs that exposes it;
    - `observable_failure`: the specific wrong behavior produced.
    Bad: "mishandles negative values". Good mechanism: "initializes the running optimum to a fixed neutral value"; good input class: "non-empty sequences entirely below that value"; good failure: "returns the initializer rather than an input-derived optimum".
-5. Basis must agree with the quoted section kind: tests->test, solution->reference_solution, statement->statement/starter_code, trace->trace_program/trace_input/trace_output, observed_failure->target_attempt/target_failure. Prefer an observed target-model failure when those sections exist. `hypothesis` is allowed when the quote merely motivates an inference not directly confirmed by the material.
+5. Basis must agree with the quoted section kind: tests->test, solution->reference_solution, statement->statement/starter_code, trace->trace_program/trace_input/trace_output, observed_failure->target_attempt/target_failure. Prefer an observed target-model failure when those sections exist. Use `hypothesis` only when no displayed test, solution, trace, or observed failure directly confirms the inference; never present a complexity-implied algorithm as uniquely required.
 6. Outside `evidence`, never copy identifiers, literal values, or distinctive wording from the material. Be abstract but mechanically concrete.
 7. Topics are 1-3 specific lowercase free-form labels. Never use "general", "misc", or "unspecified".
 8. `primary_failure_mode` is the single likeliest concrete failure, at most two sentences.
@@ -133,9 +133,9 @@ FOCUS = {
     "mbpp": "Prioritize under-specified return type, order, container, and boundary behavior pinned by assertions.",
     "mbppplus": "Prioritize behavior pinned by the expanded adversarial suite.",
     "classeval": "Prioritize state invariants, method dependencies, mutation, and constructor behavior.",
-    "livecodebench": "There is no reference solution. Infer complexity from constraints and analyze I/O and algorithmic invariants.",
+    "livecodebench": "There is no reference solution. Ground claims in the statement, I/O contract, and constraints; treat complexity implications as hypotheses unless the material forces them.",
     "cruxeval": "This is an observed program trace, not a test or reference solution. Extract language/runtime semantics required to explain it.",
-    "lbpp": "Prioritize language-specific mechanics, contract behavior, and test-pinned invariants.",
+    "lbpp": "Prioritize transferable Python mechanics, contract behavior, and test-pinned invariants.",
 }
 
 
@@ -296,11 +296,16 @@ def decoded_lbpp(raw: dict, key: str) -> Any:
 
 
 def fmt_lbpp(raw: dict, stats: Stats, family: str) -> Optional[Built]:
+    language = str(raw.get("language", "")).strip().lower()
+    # Stage 3 emits Python-only prompts and validates Python declarations. Mining
+    # Rust/Go/Java-specific mechanics would create unusable or mistranslated skills.
+    if language not in {"python", "python3", "py"}:
+        stats.skips[(family, "non_python_language")] += 1
+        return None
     completion = decoded_lbpp(raw, "completion")
     if not isinstance(completion, str) or not completion.strip():
         stats.skips[(family, "completion_decode_failed")] += 1
         return None
-    language = str(raw.get("language", "generic"))
     instruction = pick(raw, stats, family, "instruction", "prompt")
     sections: list[tuple[str, str, SectionKind]] = [
         (f"Problem ({language})", instruction, "statement"),
@@ -365,6 +370,13 @@ def render_sections(sections: list[Section]) -> str:
 
 
 def collect_names(text: str, extra: list[str]) -> list[str]:
+    """Build a conservative source-identifier blocklist for leakage checks.
+
+    Stage 1 rejects abstractions that repeat these names, and Stage 3 rejects public
+    declarations that reuse them. Generic entry points are removed by ``stop`` so the
+    guard targets benchmark-specific names rather than ordinary programming vocabulary.
+    This is lexical decontamination—not semantic concept extraction.
+    """
     names = {x for x in extra if x}
     names.update(re.findall(r"\bdef\s+([A-Za-z_]\w*)", text))
     names.update(re.findall(r"\bclass\s+([A-Za-z_]\w*)", text))

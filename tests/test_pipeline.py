@@ -14,7 +14,7 @@ import stage1_extract
 from dataset_codecs import decode_lbpp_value
 from download_datasets import LIVECODEBENCH_FILES, MBPP_REPO, materialize_download
 from llm_pool import Endpoint, LLMPool, file_hash, iter_jsonl
-from stage1_extract import EXPECTED_BASIS, Stats, dedup_key, fmt_crux, make_sections, missing_required_kinds
+from stage1_extract import EXPECTED_BASIS, Stats, dedup_key, fmt_crux, fmt_lbpp, make_sections, missing_required_kinds
 from stage2_taxonomy import per_node_rng, weighted_sample_without_replacement
 from stage3_question_bank import allocate_quotas, resumed_identifier_set, validate_signature
 
@@ -67,14 +67,8 @@ def test_livecodebench_release_mapping_and_materialization(tmp_path):
     assert not (target.parent / "livecodebench_v6.jsonl.part").exists()
 
 
-def test_strict_jsonl_reader_rejects_missing_or_broken_files(tmp_path):
-    missing = tmp_path / "missing.jsonl"
-    with pytest.raises(FileNotFoundError, match="broken symlink"):
-        list(iter_jsonl(missing, strict=True))
-    broken = tmp_path / "broken.jsonl"
-    broken.symlink_to("does-not-exist")
-    with pytest.raises(FileNotFoundError, match="broken symlink"):
-        list(iter_jsonl(broken, strict=True))
+def test_absent_resume_jsonl_is_an_empty_log(tmp_path):
+    assert list(iter_jsonl(tmp_path / "not-created-yet.jsonl", strict=True)) == []
 
 
 def test_structured_probe_rejects_schema_violations():
@@ -101,6 +95,18 @@ def test_crux_sections_are_trace_not_test_or_solution():
     assert all(section.kind not in EXPECTED_BASIS["tests"] | EXPECTED_BASIS["solution"] for section in sections)
     assert not missing_required_kinds("cruxeval", sections)
     assert missing_required_kinds("humanevalplus", sections) == {"statement", "reference_solution", "test"}
+
+
+def test_lbpp_filters_non_python_material_for_python_question_bank():
+    stats = Stats()
+    assert fmt_lbpp({"language": "rust"}, stats, "lbpp") is None
+    assert stats.skips[("lbpp", "non_python_language")] == 1
+    built = fmt_lbpp({
+        "language": "python", "lbpp_decoded": True, "instruction": "Return the input value.",
+        "completion": "def identity(value):\n    return value", "test_list": ["assert identity(2) == 2"],
+    }, stats, "lbpp")
+    assert built is not None
+    assert "Python mechanics" in built.focus
 
 
 def test_declaration_only_function_validation():
