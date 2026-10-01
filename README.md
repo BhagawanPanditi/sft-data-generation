@@ -69,7 +69,8 @@ Later stages require the previous stage's `_SUCCESS` marker. A stage refuses to 
 Useful environment settings:
 
 ```bash
-export VLLM_SERVERS=http://localhost:8000/v1,http://localhost:8002/v1,http://localhost:8003/v1
+# These direct cluster addresses are also the built-in defaults; no SSH port forwarding is needed.
+export VLLM_SERVERS=http://cn23-a40:8000/v1,http://cn24-a40:8001/v1,http://cn24-a40:8002/v1
 export JUDGE_VLLM_SERVERS=http://localhost:8010/v1
 export SERVED_MODEL_ID=generator-model-id
 export JUDGE_MODEL_ID=independent-reviewer-model-id

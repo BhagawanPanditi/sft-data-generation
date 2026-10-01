@@ -24,7 +24,7 @@ def _servers(name: str, default: str) -> list[str]:
 
 SERVERS = _servers(
     "VLLM_SERVERS",
-    "http://localhost:8000/v1,http://localhost:8002/v1,http://localhost:8003/v1",
+    "http://cn23-a40:8000/v1,http://cn24-a40:8001/v1,http://cn24-a40:8002/v1",
 )
 # Use a genuinely different model here when possible. It intentionally has a separate setting.
 JUDGE_SERVERS = _servers("JUDGE_VLLM_SERVERS", ",".join(SERVERS))
@@ -41,4 +41,4 @@ REQUIRE_DISTINCT_JUDGE_MODEL = os.getenv("REQUIRE_DISTINCT_JUDGE_MODEL", "0") ==
 _EXTRA = os.getenv("EXTRA_REQUEST_BODY", '{"chat_template_kwargs":{"enable_thinking":false}}')
 EXTRA_REQUEST_BODY: dict[str, Any] = json.loads(_EXTRA) if _EXTRA.strip() else {}
 
-PIPELINE_VERSION = "2026-10-01.3"
+PIPELINE_VERSION = "2026-10-01.4"
