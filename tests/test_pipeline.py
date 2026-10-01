@@ -12,6 +12,7 @@ import pytest
 
 import stage1_extract
 from dataset_codecs import decode_lbpp_value
+from download_datasets import LIVECODEBENCH_FILES, materialize_download
 from llm_pool import Endpoint, LLMPool, file_hash
 from stage1_extract import EXPECTED_BASIS, Stats, dedup_key, fmt_crux, make_sections, missing_required_kinds
 from stage2_taxonomy import per_node_rng, weighted_sample_without_replacement
@@ -40,6 +41,23 @@ def test_file_hash_streams_to_the_expected_digest(tmp_path):
     artifact = tmp_path / "large.bin"
     artifact.write_bytes(payload)
     assert file_hash(artifact, chunk_size=4093) == hashlib.sha256(payload).hexdigest()
+
+
+def test_livecodebench_release_mapping_and_materialization(tmp_path):
+    assert LIVECODEBENCH_FILES == {
+        "test.jsonl": "livecodebench_v1.jsonl",
+        "test2.jsonl": "livecodebench_v2.jsonl",
+        "test3.jsonl": "livecodebench_v3.jsonl",
+        "test4.jsonl": "livecodebench_v4.jsonl",
+        "test5.jsonl": "livecodebench_v5.jsonl",
+        "test6.jsonl": "livecodebench_v6.jsonl",
+    }
+    source = tmp_path / "test6.jsonl"
+    target = tmp_path / "livecodebench_v6.jsonl"
+    source.write_text('{"question_content":"example"}\n', encoding="utf-8")
+    materialize_download(source, target)
+    assert target.read_bytes() == source.read_bytes()
+    assert not (tmp_path / "livecodebench_v6.jsonl.part").exists()
 
 
 def test_structured_probe_rejects_schema_violations():

@@ -24,15 +24,18 @@ pip install -r requirements.txt
 python download_datasets.py
 ```
 
-LiveCodeBench shards are expected as:
+The downloader resolves an immutable revision of
+[`livecodebench/code_generation_lite`](https://huggingface.co/datasets/livecodebench/code_generation_lite/tree/main),
+downloads all six release files, and maps them as follows:
 
 ```text
-data/coding/livecodebench_v1.jsonl
+test.jsonl  -> data/coding/livecodebench_v1.jsonl
+test2.jsonl -> data/coding/livecodebench_v2.jsonl
 ...
-data/coding/livecodebench_v6.jsonl
+test6.jsonl -> data/coding/livecodebench_v6.jsonl
 ```
 
-The loader does not assume these filenames are cumulative. It validates and hashes every shard, and fails when they are absent unless `ALLOW_MISSING_LIVECODEBENCH=1` is explicitly set. Stage 1 measures canonical IDs and normalized-statement/material hashes and writes `output/autopsies/dedup_report.jsonl`.
+These files total roughly 4.5 GB. The downloader uses the Hugging Face cache and normally hard-links the cached files rather than making another full copy. It validates every JSONL record and records the pinned revision, row count, local path, and SHA-256 hash in the download manifest. Stage 1 does not assume that releases are disjoint: it deduplicates repeated LiveCodeBench statements and writes the decisions to `output/autopsies/dedup_report.jsonl`.
 
 ## Optional: mine actual target-model failures
 

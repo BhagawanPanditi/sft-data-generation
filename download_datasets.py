@@ -8,9 +8,11 @@ restricted unpickler; undecodable records are rejected rather than converted int
 from __future__ import annotations
 
 import os
+import shutil
+from pathlib import Path
 
 from datasets import load_dataset
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, hf_hub_download
 
 from dataset_codecs import decode_lbpp_value
 from llm_pool import atomic_write_json, atomic_write_jsonl, file_hash, iter_jsonl
@@ -21,6 +23,18 @@ REJECT_DIR = ROOT / "data" / "rejected"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
 REJECT_DIR.mkdir(parents=True, exist_ok=True)
+
+# The repository names its first release file ``test.jsonl`` and subsequent files
+# ``test2.jsonl`` through ``test6.jsonl``. Keep explicit local names so routing and
+# provenance remain unambiguous in later stages.
+LIVECODEBENCH_FILES = {
+    "test.jsonl": "livecodebench_v1.jsonl",
+    "test2.jsonl": "livecodebench_v2.jsonl",
+    "test3.jsonl": "livecodebench_v3.jsonl",
+    "test4.jsonl": "livecodebench_v4.jsonl",
+    "test5.jsonl": "livecodebench_v5.jsonl",
+    "test6.jsonl": "livecodebench_v6.jsonl",
+}
 
 
 def resolve_revision(repo_id: str) -> str:
@@ -100,31 +114,50 @@ def save_lbpp() -> dict:
     }
 
 
-def livecodebench_local_manifest() -> dict:
-    """Use local LCB shards. Exact duplicates are removed later from normalized statements."""
-    files = sorted(DATA_DIR.glob("livecodebench_v*.jsonl"))
-    if not files:
-        if os.getenv("ALLOW_MISSING_LIVECODEBENCH", "0") != "1":
-            raise RuntimeError(
-                "No data/coding/livecodebench_v*.jsonl files found. Add the local shards or set "
-                "ALLOW_MISSING_LIVECODEBENCH=1 explicitly."
-            )
-        print("[Warn] LiveCodeBench explicitly omitted by ALLOW_MISSING_LIVECODEBENCH=1")
+def materialize_download(source: Path, target: Path) -> None:
+    """Atomically expose a Hub-cached file under its pipeline name without needless copies."""
+    temporary = target.with_suffix(target.suffix + ".part")
+    temporary.unlink(missing_ok=True)
+    try:
+        # The Hub cache is normally on the same filesystem, so a hard link avoids
+        # temporarily doubling the roughly 4.5 GB LiveCodeBench footprint.
+        os.link(source, temporary)
+    except OSError:
+        with source.open("rb") as reader, temporary.open("wb") as writer:
+            shutil.copyfileobj(reader, writer, length=8 * 1024 * 1024)
+    os.replace(temporary, target)
+
+
+def download_livecodebench() -> dict:
+    """Download and rename all six release files from the pinned Hub revision."""
+    repo_id = "livecodebench/code_generation_lite"
+    revision = resolve_revision(repo_id)
     details = []
-    for path in files:
+    for remote_name, local_name in LIVECODEBENCH_FILES.items():
+        print(f"[Download] {repo_id}/{remote_name} revision={revision} -> {local_name}")
+        cached = Path(hf_hub_download(
+            repo_id=repo_id, filename=remote_name, repo_type="dataset", revision=revision,
+        ))
+        path = DATA_DIR / local_name
+        materialize_download(cached, path)
+
         count = 0
-        first = None
-        for row in iter_jsonl(path, strict=True):
-            first = first or row
-            count += 1
-        if first is None:
-            raise RuntimeError(f"LiveCodeBench shard is empty: {path}")
         required = {"question_content"}
-        if not required <= set(first):
-            raise RuntimeError(f"Unexpected LiveCodeBench schema in {path}: {sorted(first)}")
-        details.append({"path": str(path.relative_to(ROOT)), "rows": count,
-                        "sha256": file_hash(path)})
-    return {"repo_id": "livecodebench/code_generation_lite", "mode": "local_shards", "files": details}
+        for line_number, row in enumerate(iter_jsonl(path, strict=True), 1):
+            missing = required - set(row)
+            if missing:
+                raise RuntimeError(
+                    f"Unexpected LiveCodeBench schema in {remote_name} line {line_number}: "
+                    f"missing {sorted(missing)}; got {sorted(row)}"
+                )
+            count += 1
+        if count == 0:
+            raise RuntimeError(f"LiveCodeBench file is empty: {remote_name}")
+        details.append({
+            "remote_file": remote_name, "path": str(path.relative_to(ROOT)),
+            "rows": count, "sha256": file_hash(path),
+        })
+    return {"repo_id": repo_id, "revision": revision, "mode": "hub_release_files", "files": details}
 
 
 def main() -> int:
@@ -143,7 +176,7 @@ def main() -> int:
                                 required={"task_id", "skeleton", "solution_code", "test", "class_name"}))
     entries.extend(save_evoeval())
     entries.append(save_lbpp())
-    entries.append(livecodebench_local_manifest())
+    entries.append(download_livecodebench())
     atomic_write_json(MANIFEST_DIR / "download_manifest.json", {
         "pipeline_version": PIPELINE_VERSION,
         "datasets": entries,
