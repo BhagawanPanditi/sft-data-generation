@@ -385,9 +385,10 @@ def collect_names(text: str, extra: list[str]) -> list[str]:
         for argument in re.findall(r"(?:^|,)\s*\*{0,2}([A-Za-z_]\w*)", args):
             if "_" in argument or re.search(r"[a-z][A-Z]", argument):
                 names.add(argument)
-    # Distinctive snake_case and camelCase names elsewhere in code are also leakage risks.
-    names.update(token for token in re.findall(r"\b[A-Za-z_]\w*\b", text)
-                 if "_" in token or re.search(r"[a-z][A-Z]", token))
+    # Do not block every snake_case token in solutions/tests: many are generic concepts
+    # (for example ``current_value``) and made the abstraction gate reject useful rows.
+    # Declarations, explicit entry points, backticks, and distinctive parameters provide
+    # a narrower benchmark-identifier boundary with far fewer false positives.
     stop = {"solve", "main", "solution", "check", "test", "tests", "helper", "self", "candidate",
             "result", "value", "values", "number", "numbers", "items", "data", "text", "string",
             "array", "input", "output", "reference_solution", "canonical_solution", "question_content"}
@@ -537,6 +538,57 @@ def grounded(evidence: str, source: str) -> bool:
     return bool(pieces) and all(piece in source for piece in pieces)
 
 
+def canonical_quote(evidence: str, source: str) -> Optional[str]:
+    """Return an exact source quote, tolerating only whitespace normalization."""
+    pieces = [x.strip() for x in re.split(r"\.\.\.|…", evidence.strip()) if len(x.strip()) >= 6]
+    if not pieces:
+        return None
+    exact = []
+    for piece in pieces:
+        if piece in source:
+            exact.append(piece)
+            continue
+        tokens = re.split(r"\s+", piece)
+        match = re.search(r"\s+".join(re.escape(token) for token in tokens), source)
+        if not match:
+            return None
+        exact.append(source[match.start():match.end()])
+    return " ... ".join(exact)
+
+
+def canonicalize_evidence(concept: Concept, sample: Sample) -> bool:
+    """Correct quote whitespace and an incorrectly reported section deterministically."""
+    by_id = {section.id: section for section in sample.sections}
+    claimed = by_id.get(concept.evidence_section)
+    if claimed:
+        quote = canonical_quote(concept.evidence, claimed.text)
+        if quote:
+            concept.evidence = quote
+            return True
+
+    candidates = []
+    for section in sample.sections:
+        quote = canonical_quote(concept.evidence, section.text)
+        if quote:
+            candidates.append((section, quote))
+    if not candidates:
+        return False
+
+    basis_for_kind = {
+        "statement": "statement", "starter_code": "statement",
+        "reference_solution": "solution", "test": "tests",
+        "trace_program": "trace", "trace_input": "trace", "trace_output": "trace",
+        "target_attempt": "observed_failure", "target_failure": "observed_failure",
+    }
+    matching_basis = [item for item in candidates if basis_for_kind[item[0].kind] == concept.basis]
+    section, quote = (matching_basis or candidates)[0]
+    concept.evidence_section = section.id
+    concept.evidence = quote
+    if concept.basis != "hypothesis":
+        concept.basis = basis_for_kind[section.kind]
+    return True
+
+
 def ngrams(text: str, n: int = 5) -> set[tuple[str, ...]]:
     words = re.findall(r"\w+", text.lower())
     return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
@@ -576,11 +628,9 @@ def validate_concepts(autopsy: Autopsy, sample: Sample) -> Optional[str]:
     by_id = {s.id: s for s in sample.sections}
     seen_names = set()
     for concept in autopsy.concepts:
-        section = by_id.get(concept.evidence_section)
-        if section is None:
-            return f"unknown evidence_section {concept.evidence_section!r}"
-        if weak_evidence(concept.evidence) or not grounded(concept.evidence, section.text):
-            return f"evidence is not a substantial quote from {section.id}"
+        if weak_evidence(concept.evidence) or not canonicalize_evidence(concept, sample):
+            return f"evidence is not a substantial quote in any displayed section (claimed {concept.evidence_section})"
+        section = by_id[concept.evidence_section]
         if concept.basis != "hypothesis" and section.kind not in EXPECTED_BASIS[concept.basis]:
             return f"basis {concept.basis!r} does not match section kind {section.kind!r}"
         key = re.sub(r"\W+", " ", concept.name.lower()).strip()
@@ -611,7 +661,7 @@ def concept_dict(concept: Concept, cid: str, *, include_evidence: bool) -> dict:
 
 async def process(sample: Sample, pool: LLMPool, audit: JsonlWriter, rejected: JsonlWriter,
                   failed: JsonlWriter, stats: Stats) -> None:
-    notes, max_tokens, last_reason, last_text = "", INITIAL_MAX_TOKENS, "no_attempt", ""
+    notes, max_tokens, last_reason, last_detail, last_text = "", INITIAL_MAX_TOKENS, "no_attempt", "", ""
     for _ in range(MAX_REVISION_ATTEMPTS):
         text, finish, error = await pool.chat(
             [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_prompt(sample, notes)}],
@@ -624,23 +674,26 @@ async def process(sample: Sample, pool: LLMPool, audit: JsonlWriter, rejected: J
         last_text = text or ""
         if finish == "length":
             max_tokens = min(max_tokens * 2, MAX_TOKENS_CEILING)
-            notes, last_reason = "The reply was truncated. Be concise and complete the JSON.", "truncated"
+            notes, last_reason, last_detail = "The reply was truncated. Be concise and complete the JSON.", "truncated", "finish_reason=length"
             continue
         autopsy, parse_error = parse_reply(last_text)
         if autopsy is None:
-            notes, last_reason = f"Invalid output ({parse_error}). Return exactly the required JSON.", f"parse:{parse_error}"
+            notes, last_reason, last_detail = (f"Invalid output ({parse_error}). Return exactly the required JSON.",
+                                                 f"parse:{parse_error}", str(parse_error))
             continue
         issue = validate_concepts(autopsy, sample)
         if issue:
-            notes, last_reason = f"Fix evidence grounding: {issue}.", "grounding"
+            notes, last_reason, last_detail = f"Fix evidence grounding: {issue}.", "grounding", issue
             continue
         autopsy.topics = clean_topics(autopsy.topics)
         if not autopsy.topics:
-            notes, last_reason = "All topic labels were invalid. Supply specific lowercase problem-area labels.", "topics"
+            notes, last_reason, last_detail = ("All topic labels were invalid. Supply specific lowercase problem-area labels.",
+                                                 "topics", "all topic labels invalid after normalization")
             continue
         leak = leak_reason(autopsy, sample)
         if leak:
-            notes, last_reason = f"Rewrite all non-evidence fields generically; material-specific leakage was found ({leak}).", "leak"
+            notes, last_reason, last_detail = (f"Rewrite all non-evidence fields generically; material-specific leakage was found ({leak}).",
+                                                 "leak", leak)
             continue
         base = {
             "sample_id": sample.sample_id, "native_id": sample.native_id, "family": sample.family,
@@ -655,8 +708,51 @@ async def process(sample: Sample, pool: LLMPool, audit: JsonlWriter, rejected: J
         stats.outcomes["ok"] += 1
         return
     rejected.write({"sample_id": sample.sample_id, "family": sample.family, "reason": last_reason,
-                    "last_reply": last_text[:3000]})
+                    "detail": last_detail, "last_reply": last_text[:3000]})
     stats.outcomes[f"rejected:{last_reason.split(':')[0]}"] += 1
+
+
+def recover_rejected_replies(samples: list[Sample], model_id: str, stats: Stats) -> int:
+    """Revalidate complete cached replies after a compatible deterministic-gate fix."""
+    if not model_id:
+        return 0
+    by_id = {sample.sample_id: sample for sample in samples}
+    accepted = done_ids(OUTPUT_DIR / "autopsies.jsonl", "sample_id")
+    latest = {}
+    for row in iter_jsonl(OUTPUT_DIR / "rejected.jsonl", strict=True):
+        sid = str(row.get("sample_id", ""))
+        if sid and sid not in accepted:
+            latest[sid] = row
+    writer = JsonlWriter(OUTPUT_DIR / "autopsies.jsonl")
+    recovered = 0
+    try:
+        for sid in sorted(latest):
+            sample = by_id.get(sid)
+            reply = latest[sid].get("last_reply")
+            if not sample or not isinstance(reply, str):
+                continue
+            autopsy, _ = parse_reply(reply)
+            if autopsy is None or validate_concepts(autopsy, sample):
+                continue
+            autopsy.topics = clean_topics(autopsy.topics)
+            if not autopsy.topics or leak_reason(autopsy, sample):
+                continue
+            base = {
+                "sample_id": sample.sample_id, "native_id": sample.native_id, "family": sample.family,
+                "source_file": sample.source_file, "statement_hash": sample.statement_hash,
+                "topics": autopsy.topics, "primary_failure_mode": autopsy.primary_failure_mode,
+                "difficulty_syntax": autopsy.difficulty_syntax,
+                "difficulty_reasoning": autopsy.difficulty_reasoning, "model_id": model_id,
+            }
+            concepts = [concept_dict(c, f"{sample.sample_id}#{i}", include_evidence=True)
+                        for i, c in enumerate(autopsy.concepts, 1)]
+            writer.write({**base, "concepts": concepts})
+            accepted.add(sid)
+            recovered += 1
+    finally:
+        writer.close()
+    stats.outcomes["recovered_cached_reply"] += recovered
+    return recovered
 
 
 def compact_rejections() -> None:
@@ -789,17 +885,29 @@ def main() -> int:
         "system_prompt": SYSTEM_PROMPT, "schema": SCHEMA, "code": code_fingerprint,
     })
     manifest_path = OUTPUT_DIR / "run_manifest.json"
+    old_manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    migration = old_manifest.get("compatible_migration")
     if manifest_path.exists() and any((OUTPUT_DIR / name).exists() for name in ("autopsies.jsonl", "rejected.jsonl", "failed.jsonl")):
-        old = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if old.get("config_fingerprint") != config_fingerprint:
-            print("[Fatal] Existing stage-1 output was created with different inputs/prompts. Use a fresh OUTPUT_DIR or archive the old output.")
-            return 2
+        if old_manifest.get("config_fingerprint") != config_fingerprint:
+            compatible = (
+                os.getenv("MIGRATE_COMPATIBLE_STAGE1", "0") == "1"
+                and old_manifest.get("pipeline_version") == PIPELINE_VERSION
+                and old_manifest.get("input_fingerprint") == benchmark_fingerprint
+                and old_manifest.get("observed_failure_fingerprint") == observed_failure_fingerprint
+            )
+            if not compatible:
+                print("[Fatal] Existing stage-1 output was created with different inputs/prompts. Use a fresh OUTPUT_DIR or archive the old output.")
+                return 2
+            migration = {
+                "from_config_fingerprint": old_manifest.get("config_fingerprint"),
+                "to_config_fingerprint": config_fingerprint,
+                "reason": "explicit compatible validator/leakage-gate upgrade",
+            }
+            print("[Resume] Explicitly migrating compatible Stage-1 validation fingerprint")
 
     # Persist the compatibility guard before the first request so a crash cannot leave
     # unversioned partial output that a later prompt revision would accidentally resume.
-    previous_model = ""
-    if manifest_path.exists():
-        previous_model = json.loads(manifest_path.read_text(encoding="utf-8")).get("model_id", "")
+    previous_model = old_manifest.get("model_id", "")
     existing_models = {row.get("model_id") for row in iter_jsonl(OUTPUT_DIR / "autopsies.jsonl", strict=True)
                        if row.get("model_id")}
     if len(existing_models) > 1:
@@ -814,9 +922,13 @@ def main() -> int:
     atomic_write_json(manifest_path, {
         "pipeline_version": PIPELINE_VERSION, "config_fingerprint": config_fingerprint,
         "input_fingerprint": benchmark_fingerprint, "observed_failure_fingerprint": observed_failure_fingerprint,
-        "model_id": previous_model,
-        "global_concurrency": GLOBAL_CONCURRENCY,
+        "model_id": previous_model, "global_concurrency": GLOBAL_CONCURRENCY,
+        "compatible_migration": migration,
     })
+
+    if os.getenv("RECOVER_REJECTED_REPLIES", "0") == "1":
+        recovered = recover_rejected_replies(samples, previous_model, stats)
+        print(f"[Recovery] Accepted {recovered} cached rejected replies under corrected deterministic gates")
 
     retry_rejected = os.getenv("RETRY_REJECTED", "0") == "1"
     done = done_ids(OUTPUT_DIR / "autopsies.jsonl", "sample_id")
@@ -839,8 +951,8 @@ def main() -> int:
     atomic_write_json(manifest_path, {
         "pipeline_version": PIPELINE_VERSION, "config_fingerprint": config_fingerprint,
         "input_fingerprint": benchmark_fingerprint, "observed_failure_fingerprint": observed_failure_fingerprint,
-        "model_id": model,
-        "global_concurrency": GLOBAL_CONCURRENCY,
+        "model_id": model, "global_concurrency": GLOBAL_CONCURRENCY,
+        "compatible_migration": migration,
     })
     print("[Done] Run stage1_verify.py; stage 2 will refuse unverified output.")
     return 0 if done or stats.outcomes.get("ok") else 1

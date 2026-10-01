@@ -145,6 +145,45 @@ def test_declaration_only_class_validation():
     assert validate_signature(bad, "class")
 
 
+def test_evidence_canonicalization_repairs_whitespace_section_and_basis():
+    sections = make_sections([
+        ("Problem", "Every valid record must preserve its original relative order.", "statement"),
+        ("Tests", "assert candidate([]) == []", "test"),
+    ])
+    sample = stage1_extract.Sample(
+        family="humaneval", sample_id="x", native_id="x", source_file="x.jsonl",
+        sections=sections, payload=stage1_extract.render_sections(sections), focus="", names=[],
+        statement_hash="s", dedup_group="d", richness=1,
+    )
+    concept = stage1_extract.Concept(
+        evidence="Every valid record must preserve\nits original relative order.",
+        evidence_section="s1", name="stable relative ordering",
+        invariant="Every correct result must preserve the relative order of equivalent records.",
+        wrong_mechanism="sorts equivalent records by an unrelated secondary value",
+        failing_input_class="inputs containing multiple equivalent records in a distinct order",
+        observable_failure="equivalent records appear in a different relative order", basis="tests",
+    )
+    assert stage1_extract.canonicalize_evidence(concept, sample)
+    assert concept.evidence_section == "s0"
+    assert concept.basis == "statement"
+    assert concept.evidence in sections[0].text
+    assert stage1_extract.validate_concepts(
+        stage1_extract.Autopsy(
+            concepts=[concept], topics=["stable ordering"], primary_failure_mode="reorders equivalent records",
+            difficulty_syntax=2, difficulty_reasoning=2,
+        ), sample,
+    ) is None
+
+
+def test_identifier_blocklist_avoids_generic_snake_case_false_positives():
+    names = stage1_extract.collect_names(
+        "def benchmark_entry(current_value):\n    temporary_result = current_value",
+        [],
+    )
+    assert "benchmark_entry" in names
+    assert "temporary_result" not in names
+
+
 def test_nonoverlap_families_deduplicate_only_identical_full_material():
     assert dedup_key("cruxeval", "1", "same-code", "code-input-a") != dedup_key(
         "cruxeval", "2", "same-code", "code-input-b"

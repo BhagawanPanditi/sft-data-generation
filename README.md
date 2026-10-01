@@ -90,6 +90,11 @@ export VLLM_SERVERS=http://cn23-a40:8000/v1,http://cn24-a40:8001/v1,http://cn24-
 # export REQUIRE_DISTINCT_JUDGE_MODEL=1
 # Retry unresolved stage-1 records after inspecting the verifier report.
 # export RETRY_REJECTED=1
+# One-time, explicit migration for the compatible Stage-1 evidence-validator upgrade;
+# accepted rows remain valid while rejected rows can be retried under the corrected gate.
+# export MIGRATE_COMPATIBLE_STAGE1=1
+# Revalidate cached rejected replies locally before spending more model requests.
+# export RECOVER_REJECTED_REPLIES=1
 # If a non-Qwen chat template rejects enable_thinking:
 export EXTRA_REQUEST_BODY='{}'
 ```
