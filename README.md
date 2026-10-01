@@ -37,6 +37,8 @@ test6.jsonl -> data/coding/livecodebench_v6.jsonl
 
 These files total roughly 4.5 GB. The downloader uses the Hugging Face cache and normally hard-links the cached files rather than making another full copy. It validates every JSONL record and records the pinned revision, row count, local path, and SHA-256 hash in the download manifest. Stage 1 does not assume that releases are disjoint: it deduplicates repeated LiveCodeBench statements and writes the decisions to `output/autopsies/dedup_report.jsonl`.
 
+MBPP is downloaded from the native-Parquet `google-research-datasets/mbpp` repository. Do not substitute the legacy `Muennighoff/mbpp` script repository when using `datasets>=4`; version 4 deliberately no longer executes Hub dataset scripts.
+
 ## Optional: mine actual target-model failures
 
 Plausible failure modes are useful, but execution-observed failures are better. If you have benchmark attempts from the model you intend to improve, write:

@@ -12,7 +12,7 @@ import pytest
 
 import stage1_extract
 from dataset_codecs import decode_lbpp_value
-from download_datasets import LIVECODEBENCH_FILES, materialize_download
+from download_datasets import LIVECODEBENCH_FILES, MBPP_REPO, materialize_download
 from llm_pool import Endpoint, LLMPool, file_hash
 from stage1_extract import EXPECTED_BASIS, Stats, dedup_key, fmt_crux, make_sections, missing_required_kinds
 from stage2_taxonomy import per_node_rng, weighted_sample_without_replacement
@@ -44,6 +44,7 @@ def test_file_hash_streams_to_the_expected_digest(tmp_path):
 
 
 def test_livecodebench_release_mapping_and_materialization(tmp_path):
+    assert MBPP_REPO == "google-research-datasets/mbpp"
     assert LIVECODEBENCH_FILES == {
         "test.jsonl": "livecodebench_v1.jsonl",
         "test2.jsonl": "livecodebench_v2.jsonl",

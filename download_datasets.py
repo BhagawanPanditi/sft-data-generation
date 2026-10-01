@@ -27,6 +27,7 @@ REJECT_DIR.mkdir(parents=True, exist_ok=True)
 # The repository names its first release file ``test.jsonl`` and subsequent files
 # ``test2.jsonl`` through ``test6.jsonl``. Keep explicit local names so routing and
 # provenance remain unambiguous in later stages.
+MBPP_REPO = "google-research-datasets/mbpp"
 LIVECODEBENCH_FILES = {
     "test.jsonl": "livecodebench_v1.jsonl",
     "test2.jsonl": "livecodebench_v2.jsonl",
@@ -164,7 +165,9 @@ def main() -> int:
     entries: list[dict] = []
     entries.append(save_dataset("openai/openai_humaneval", "openai_humaneval.jsonl",
                                 required={"task_id", "prompt", "canonical_solution", "test", "entry_point"}))
-    entries.append(save_dataset("Muennighoff/mbpp", "mbpp_sanitized.jsonl", config="sanitized",
+    # Use the native-Parquet mirror. Muennighoff/mbpp still relies on mbpp.py,
+    # which datasets>=4 intentionally refuses to execute.
+    entries.append(save_dataset(MBPP_REPO, "mbpp_sanitized.jsonl", config="sanitized",
                                 required={"task_id", "prompt", "code", "test_list"}))
     entries.append(save_dataset("evalplus/humanevalplus", "humanevalplus.jsonl",
                                 required={"task_id", "prompt", "canonical_solution", "test", "entry_point"}))
