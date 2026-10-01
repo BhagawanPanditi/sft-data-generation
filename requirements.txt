@@ -1,0 +1,7 @@
+aiohttp>=3.9,<4
+pydantic>=2.7,<3
+tqdm>=4.66,<5
+datasets>=3.0,<5
+huggingface-hub>=0.25,<2
+jsonschema>=4.23,<5
+pytest>=8,<10
